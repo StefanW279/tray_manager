@@ -385,7 +385,7 @@ static GVariant* sni_get_property(GDBusConnection* connection,
   if (strcmp(property_name, "Category") == 0)
     return g_variant_new_string("ApplicationStatus");
   if (strcmp(property_name, "Id") == 0)
-    return g_variant_new_string("tray_manager");
+    return g_variant_new_string("commet");
   if (strcmp(property_name, "Title") == 0)
     return g_variant_new_string(tray_title != nullptr ? tray_title : "tray_manager");
   if (strcmp(property_name, "Status") == 0)
