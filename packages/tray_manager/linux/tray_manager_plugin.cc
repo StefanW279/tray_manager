@@ -19,6 +19,8 @@ GtkWidget* menu = nullptr;
 GDBusConnection* sni_connection = nullptr;
 GDBusNodeInfo* sni_node_info = nullptr;
 guint sni_registration_id = 0;
+guint watcher_watch_id = 0;
+gboolean watcher_registered = FALSE;
 GdkPixbuf* tray_icon_pixbuf = nullptr;
 gchar* tray_title = nullptr;
 gboolean tray_visible = FALSE;
@@ -191,6 +193,45 @@ static const GDBusInterfaceVTable sni_vtable = {
     nullptr,
     {0}};
 
+static void watcher_registration_finished(GObject* source_object,
+                                          GAsyncResult* result,
+                                          gpointer user_data) {
+  GError* error = nullptr;
+  g_autoptr(GVariant) reply =
+      g_dbus_connection_call_finish(G_DBUS_CONNECTION(source_object), result,
+                                    &error);
+  if (error != nullptr) {
+    watcher_registered = FALSE;
+    g_debug("tray_manager: StatusNotifierItem registration will be retried: %s",
+            error->message);
+    g_error_free(error);
+    return;
+  }
+  watcher_registered = reply != nullptr;
+}
+
+static void watcher_name_appeared(GDBusConnection* connection,
+                                  const gchar* name,
+                                  const gchar* name_owner,
+                                  gpointer user_data) {
+  if (sni_connection == nullptr || watcher_registered) return;
+
+  // A watcher can start after the app. Register whenever it appears, rather
+  // than permanently losing the tray icon if the panel starts late.
+  const gchar* unique_name = g_dbus_connection_get_unique_name(sni_connection);
+  g_dbus_connection_call(
+      sni_connection, name, "/StatusNotifierWatcher",
+      "org.kde.StatusNotifierWatcher", "RegisterStatusNotifierItem",
+      g_variant_new("(s)", unique_name), nullptr, G_DBUS_CALL_FLAGS_NONE, 3000,
+      nullptr, watcher_registration_finished, nullptr);
+}
+
+static void watcher_name_vanished(GDBusConnection* connection,
+                                  const gchar* name,
+                                  gpointer user_data) {
+  watcher_registered = FALSE;
+}
+
 static gboolean register_status_notifier_item(GError** error) {
   sni_connection = g_bus_get_sync(G_BUS_TYPE_SESSION, nullptr, error);
   if (sni_connection == nullptr) return FALSE;
@@ -205,13 +246,10 @@ static gboolean register_status_notifier_item(GError** error) {
       &sni_vtable, nullptr, nullptr, error);
   if (sni_registration_id == 0) return FALSE;
 
-  // The watcher expects the bus name that owns the StatusNotifierItem object.
-  const gchar* unique_name = g_dbus_connection_get_unique_name(sni_connection);
-  g_dbus_connection_call(
+  watcher_watch_id = g_bus_watch_name_on_connection(
       sni_connection, "org.kde.StatusNotifierWatcher",
-      "/StatusNotifierWatcher", "org.kde.StatusNotifierWatcher",
-      "RegisterStatusNotifierItem", g_variant_new("(s)", unique_name), nullptr,
-      G_DBUS_CALL_FLAGS_NONE, 3000, nullptr, nullptr, nullptr);
+      G_BUS_NAME_WATCHER_FLAGS_NONE, watcher_name_appeared,
+      watcher_name_vanished, nullptr, nullptr);
   return TRUE;
 }
 
