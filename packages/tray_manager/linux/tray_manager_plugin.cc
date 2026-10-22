@@ -19,8 +19,6 @@ GtkWidget* menu = nullptr;
 GDBusConnection* sni_connection = nullptr;
 GDBusNodeInfo* sni_node_info = nullptr;
 guint sni_registration_id = 0;
-GDBusNodeInfo* dbusmenu_node_info = nullptr;
-guint dbusmenu_registration_id = 0;
 guint watcher_watch_id = 0;
 gboolean watcher_registered = FALSE;
 GdkPixbuf* tray_icon_pixbuf = nullptr;
@@ -34,47 +32,6 @@ struct _TrayManagerPlugin {
 };
 
 G_DEFINE_TYPE(TrayManagerPlugin, tray_manager_plugin, g_object_get_type())
-
-static const char kDbusMenuIntrospectionXml[] =
-    "<node>"
-    " <interface name='com.canonical.dbusmenu'>"
-    "  <property name='Version' type='u' access='read'/>"
-    "  <property name='TextDirection' type='s' access='read'/>"
-    "  <property name='Status' type='s' access='read'/>"
-    "  <property name='IconThemePath' type='as' access='read'/>"
-    "  <method name='GetLayout'>"
-    "   <arg type='i' direction='in'/><arg type='i' direction='in'/>"
-    "   <arg type='as' direction='in'/><arg type='u' direction='out'/>"
-    "   <arg type='(ia{sv}av)' direction='out'/>"
-    "  </method>"
-    "  <method name='GetGroupProperties'>"
-    "   <arg type='ai' direction='in'/><arg type='as' direction='in'/>"
-    "   <arg type='a(ia{sv})' direction='out'/>"
-    "  </method>"
-    "  <method name='GetProperty'>"
-    "   <arg type='i' direction='in'/><arg type='s' direction='in'/>"
-    "   <arg type='v' direction='out'/>"
-    "  </method>"
-    "  <method name='Event'>"
-    "   <arg type='i' direction='in'/><arg type='s' direction='in'/>"
-    "   <arg type='v' direction='in'/><arg type='u' direction='in'/>"
-    "  </method>"
-    "  <method name='EventGroup'>"
-    "   <arg type='a(isvu)' direction='in'/><arg type='a(ias)' direction='out'/>"
-    "  </method>"
-    "  <method name='AboutToShow'>"
-    "   <arg type='i' direction='in'/><arg type='b' direction='out'/>"
-    "  </method>"
-    "  <method name='AboutToShowGroup'>"
-    "   <arg type='ai' direction='in'/><arg type='ai' direction='out'/>"
-    "   <arg type='ai' direction='out'/>"
-    "  </method>"
-    "  <signal name='LayoutUpdated'><arg type='u'/><arg type='i'/></signal>"
-    "  <signal name='ItemsPropertiesUpdated'>"
-    "   <arg type='a(ia{sv})'/><arg type='a(ias)'/>"
-    "  </signal>"
-    " </interface>"
-    "</node>";
 
 static const char kSniIntrospectionXml[] =
     "<node>"
@@ -171,204 +128,6 @@ static void show_context_menu() {
   gtk_menu_popup_at_pointer(GTK_MENU(menu), nullptr);
 }
 
-static GtkWidget* find_menu_item_by_id(GtkWidget* widget, gint id) {
-  if (widget == nullptr) return nullptr;
-  if (GTK_IS_MENU_ITEM(widget) &&
-      GPOINTER_TO_INT(g_object_get_data(G_OBJECT(widget), "tray-manager-id")) == id) {
-    return widget;
-  }
-  if (GTK_IS_CONTAINER(widget)) {
-    GList* children = gtk_container_get_children(GTK_CONTAINER(widget));
-    for (GList* node = children; node != nullptr; node = node->next) {
-      GtkWidget* found = find_menu_item_by_id(GTK_WIDGET(node->data), id);
-      if (found != nullptr) {
-        g_list_free(children);
-        return found;
-      }
-      if (GTK_IS_MENU_ITEM(node->data)) {
-        GtkWidget* submenu =
-            gtk_menu_item_get_submenu(GTK_MENU_ITEM(node->data));
-        if (submenu != nullptr) {
-          found = find_menu_item_by_id(submenu, id);
-          if (found != nullptr) {
-            g_list_free(children);
-            return found;
-          }
-        }
-      }
-    }
-    g_list_free(children);
-  }
-  return nullptr;
-}
-
-static GVariant* dbusmenu_item_properties(GtkWidget* widget) {
-  GVariantBuilder props;
-  g_variant_builder_init(&props, G_VARIANT_TYPE("a{sv}"));
-  const bool separator = GTK_IS_SEPARATOR_MENU_ITEM(widget);
-  const char* label = separator ? "" : gtk_menu_item_get_label(GTK_MENU_ITEM(widget));
-  g_variant_builder_add(&props, "{sv}", "label", g_variant_new_string(label != nullptr ? label : ""));
-  g_variant_builder_add(&props, "{sv}", "enabled", g_variant_new_boolean(gtk_widget_get_sensitive(widget)));
-  g_variant_builder_add(&props, "{sv}", "visible", g_variant_new_boolean(gtk_widget_get_visible(widget)));
-  if (separator) {
-    g_variant_builder_add(&props, "{sv}", "type", g_variant_new_string("separator"));
-  } else if (GTK_IS_CHECK_MENU_ITEM(widget)) {
-    g_variant_builder_add(&props, "{sv}", "toggle-type", g_variant_new_string("checkmark"));
-    g_variant_builder_add(&props, "{sv}", "toggle-state",
-                          g_variant_new_int32(gtk_check_menu_item_get_active(GTK_CHECK_MENU_ITEM(widget)) ? 1 : 0));
-  }
-  GtkWidget* submenu = GTK_IS_MENU_ITEM(widget)
-                           ? gtk_menu_item_get_submenu(GTK_MENU_ITEM(widget))
-                           : nullptr;
-  if (submenu != nullptr) {
-    g_variant_builder_add(&props, "{sv}", "children-display", g_variant_new_string("submenu"));
-  }
-  return g_variant_builder_end(&props);
-}
-
-static GVariant* dbusmenu_layout(GtkWidget* widget, gint depth, gboolean root) {
-  const gint id = root ? 0 : GPOINTER_TO_INT(g_object_get_data(G_OBJECT(widget), "tray-manager-id"));
-  GVariantBuilder props;
-  g_variant_builder_init(&props, G_VARIANT_TYPE("a{sv}"));
-  if (!root) {
-    GVariant* properties = dbusmenu_item_properties(widget);
-    GVariantIter iter;
-    const gchar* key;
-    GVariant* value;
-    g_variant_iter_init(&iter, properties);
-    while (g_variant_iter_next(&iter, "{&sv}", &key, &value)) {
-      g_variant_builder_add(&props, "{sv}", key, value);
-      g_variant_unref(value);
-    }
-    g_variant_unref(properties);
-  }
-
-  GVariantBuilder children;
-  g_variant_builder_init(&children, G_VARIANT_TYPE("av"));
-  GtkWidget* container = root ? menu :
-      (GTK_IS_MENU_ITEM(widget) ? gtk_menu_item_get_submenu(GTK_MENU_ITEM(widget)) : nullptr);
-  if (container != nullptr && depth != 0 && GTK_IS_CONTAINER(container)) {
-    GList* child_widgets = gtk_container_get_children(GTK_CONTAINER(container));
-    for (GList* node = child_widgets; node != nullptr; node = node->next) {
-      GVariant* child = dbusmenu_layout(GTK_WIDGET(node->data), depth < 0 ? -1 : depth - 1, FALSE);
-      g_variant_builder_add_value(&children, g_variant_new_variant(child));
-      g_variant_unref(child);
-    }
-    g_list_free(child_widgets);
-  }
-  return g_variant_new("(i@a{sv}@av)", id, g_variant_builder_end(&props),
-                       g_variant_builder_end(&children));
-}
-
-static GVariant* dbusmenu_get_property_for_item(GtkWidget* widget, const gchar* name) {
-  if (strcmp(name, "label") == 0) {
-    const char* label = GTK_IS_SEPARATOR_MENU_ITEM(widget) ? "" :
-        gtk_menu_item_get_label(GTK_MENU_ITEM(widget));
-    return g_variant_new_string(label != nullptr ? label : "");
-  }
-  if (strcmp(name, "enabled") == 0)
-    return g_variant_new_boolean(gtk_widget_get_sensitive(widget));
-  if (strcmp(name, "visible") == 0)
-    return g_variant_new_boolean(gtk_widget_get_visible(widget));
-  if (strcmp(name, "type") == 0 && GTK_IS_SEPARATOR_MENU_ITEM(widget))
-    return g_variant_new_string("separator");
-  if (strcmp(name, "toggle-type") == 0 && GTK_IS_CHECK_MENU_ITEM(widget))
-    return g_variant_new_string("checkmark");
-  if (strcmp(name, "toggle-state") == 0 && GTK_IS_CHECK_MENU_ITEM(widget))
-    return g_variant_new_int32(gtk_check_menu_item_get_active(GTK_CHECK_MENU_ITEM(widget)) ? 1 : 0);
-  if (strcmp(name, "children-display") == 0 && GTK_IS_MENU_ITEM(widget) &&
-      gtk_menu_item_get_submenu(GTK_MENU_ITEM(widget)) != nullptr)
-    return g_variant_new_string("submenu");
-  return nullptr;
-}
-
-static GVariant* dbusmenu_get_property(GDBusConnection* connection,
-                                       const gchar* sender,
-                                       const gchar* object_path,
-                                       const gchar* interface_name,
-                                       const gchar* property_name,
-                                       GError** error,
-                                       gpointer user_data) {
-  if (strcmp(property_name, "Version") == 0) return g_variant_new_uint32(3);
-  if (strcmp(property_name, "TextDirection") == 0) return g_variant_new_string("ltr");
-  if (strcmp(property_name, "Status") == 0) return g_variant_new_string("normal");
-  if (strcmp(property_name, "IconThemePath") == 0) return g_variant_new_strv(nullptr, 0);
-  return nullptr;
-}
-
-static void dbusmenu_method_call(GDBusConnection* connection,
-                                 const gchar* sender,
-                                 const gchar* object_path,
-                                 const gchar* interface_name,
-                                 const gchar* method_name,
-                                 GVariant* parameters,
-                                 GDBusMethodInvocation* invocation,
-                                 gpointer user_data) {
-  if (strcmp(method_name, "GetLayout") == 0) {
-    GVariant* depth_value = g_variant_get_child_value(parameters, 1);
-    const gint depth = g_variant_get_int32(depth_value);
-    g_variant_unref(depth_value);
-    GVariant* layout = dbusmenu_layout(menu, depth, TRUE);
-    g_dbus_method_invocation_return_value(invocation, g_variant_new("(u@(ia{sv}av))", 1, layout));
-  } else if (strcmp(method_name, "GetGroupProperties") == 0) {
-    GVariantBuilder results;
-    g_variant_builder_init(&results, G_VARIANT_TYPE("a(ia{sv})"));
-    GVariant* ids = g_variant_get_child_value(parameters, 0);
-    GVariantIter iter;
-    gint id;
-    g_variant_iter_init(&iter, ids);
-    while (g_variant_iter_next(&iter, "i", &id)) {
-      GtkWidget* item = find_menu_item_by_id(menu, id);
-      if (item != nullptr) {
-        g_variant_builder_add(&results, "(i@a{sv})", id, dbusmenu_item_properties(item));
-      }
-    }
-    g_variant_unref(ids);
-    g_dbus_method_invocation_return_value(invocation, g_variant_new("(@a(ia{sv}))", g_variant_builder_end(&results)));
-  } else if (strcmp(method_name, "GetProperty") == 0) {
-    GVariant* id_value = g_variant_get_child_value(parameters, 0);
-    GVariant* name_value = g_variant_get_child_value(parameters, 1);
-    const gint id = g_variant_get_int32(id_value);
-    const gchar* name = g_variant_get_string(name_value, nullptr);
-    GtkWidget* item = find_menu_item_by_id(menu, id);
-    GVariant* value = item != nullptr ? dbusmenu_get_property_for_item(item, name) : nullptr;
-    if (value == nullptr) {
-      g_dbus_method_invocation_return_dbus_error(invocation, "com.canonical.dbusmenu.Error.UnknownProperty", "Unknown menu item property");
-    } else {
-      g_dbus_method_invocation_return_value(invocation, g_variant_new("(v)", value));
-    }
-    g_clear_pointer(&value, g_variant_unref);
-    g_variant_unref(id_value);
-    g_variant_unref(name_value);
-  } else if (strcmp(method_name, "Event") == 0) {
-    GVariant* id_value = g_variant_get_child_value(parameters, 0);
-    GVariant* event_value = g_variant_get_child_value(parameters, 1);
-    const gint id = g_variant_get_int32(id_value);
-    const gchar* event_name = g_variant_get_string(event_value, nullptr);
-    GtkWidget* item = find_menu_item_by_id(menu, id);
-    if (item != nullptr && strcmp(event_name, "clicked") == 0)
-      gtk_menu_item_activate(GTK_MENU_ITEM(item));
-    g_variant_unref(id_value);
-    g_variant_unref(event_value);
-    g_dbus_method_invocation_return_value(invocation, g_variant_new("()"));
-  } else if (strcmp(method_name, "EventGroup") == 0) {
-    GVariantBuilder errors;
-    g_variant_builder_init(&errors, G_VARIANT_TYPE("a(ias)"));
-    g_dbus_method_invocation_return_value(invocation, g_variant_new("(@a(ias))", g_variant_builder_end(&errors)));
-  } else if (strcmp(method_name, "AboutToShow") == 0) {
-    g_dbus_method_invocation_return_value(invocation, g_variant_new("(b)", FALSE));
-  } else if (strcmp(method_name, "AboutToShowGroup") == 0) {
-    GVariantBuilder updates;
-    GVariantBuilder errors;
-    g_variant_builder_init(&updates, G_VARIANT_TYPE("ai"));
-    g_variant_builder_init(&errors, G_VARIANT_TYPE("ai"));
-    g_dbus_method_invocation_return_value(invocation, g_variant_new("(@ai@ai)", g_variant_builder_end(&updates), g_variant_builder_end(&errors)));
-  }
-}
-
-static const GDBusInterfaceVTable dbusmenu_vtable = {
-    dbusmenu_method_call, dbusmenu_get_property, nullptr, {0}};
-
 static GVariant* sni_get_property(GDBusConnection* connection,
                                   const gchar* sender,
                                   const gchar* object_path,
@@ -405,7 +164,7 @@ static GVariant* sni_get_property(GDBusConnection* connection,
   if (strcmp(property_name, "ItemIsMenu") == 0)
     return g_variant_new_boolean(FALSE);
   if (strcmp(property_name, "Menu") == 0)
-    return g_variant_new_object_path("/MenuBar");
+    return g_variant_new_object_path("/");
   return nullptr;
 }
 
@@ -487,15 +246,6 @@ static gboolean register_status_notifier_item(GError** error) {
       &sni_vtable, nullptr, nullptr, error);
   if (sni_registration_id == 0) return FALSE;
 
-  dbusmenu_node_info = g_dbus_node_info_new_for_xml(kDbusMenuIntrospectionXml, error);
-  if (dbusmenu_node_info == nullptr) return FALSE;
-  dbusmenu_registration_id = g_dbus_connection_register_object(
-      sni_connection, "/MenuBar",
-      g_dbus_node_info_lookup_interface(dbusmenu_node_info,
-                                        "com.canonical.dbusmenu"),
-      &dbusmenu_vtable, nullptr, nullptr, error);
-  if (dbusmenu_registration_id == 0) return FALSE;
-
   watcher_watch_id = g_bus_watch_name_on_connection(
       sni_connection, "org.kde.StatusNotifierWatcher",
       G_BUS_NAME_WATCHER_FLAGS_NONE, watcher_name_appeared,
@@ -552,7 +302,6 @@ GtkWidget* _create_menu(FlValue* args) {
       g_signal_connect(G_OBJECT(item), "activate", G_CALLBACK(_on_activate),
                        GINT_TO_POINTER(id));
     }
-    g_object_set_data(G_OBJECT(item), "tray-manager-id", GINT_TO_POINTER(id));
     gtk_menu_shell_append(GTK_MENU_SHELL(new_menu), item);
   }
   return new_menu;
@@ -635,11 +384,6 @@ static FlMethodResponse* set_context_menu(TrayManagerPlugin* self,
   }
   menu = _create_menu(fl_value_lookup_string(args, "menu"));
   gtk_widget_show_all(menu);
-  if (sni_connection != nullptr) {
-    g_dbus_connection_emit_signal(sni_connection, nullptr, "/MenuBar",
-                                  "com.canonical.dbusmenu", "LayoutUpdated",
-                                  g_variant_new("(ui)", 1, 0), nullptr);
-  }
 
   return FL_METHOD_RESPONSE(
       fl_method_success_response_new(fl_value_new_bool(true)));
@@ -676,14 +420,6 @@ static void tray_manager_plugin_dispose(GObject* object) {
   if (sni_connection != nullptr && sni_registration_id != 0) {
     g_dbus_connection_unregister_object(sni_connection, sni_registration_id);
     sni_registration_id = 0;
-  }
-  if (sni_connection != nullptr && dbusmenu_registration_id != 0) {
-    g_dbus_connection_unregister_object(sni_connection, dbusmenu_registration_id);
-    dbusmenu_registration_id = 0;
-  }
-  if (dbusmenu_node_info != nullptr) {
-    g_dbus_node_info_unref(dbusmenu_node_info);
-    dbusmenu_node_info = nullptr;
   }
   if (sni_node_info != nullptr) {
     g_dbus_node_info_unref(sni_node_info);
