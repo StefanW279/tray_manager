@@ -240,8 +240,10 @@ static GVariant* dbusmenu_layout(GtkWidget* widget, gint depth, gboolean root) {
     GList* child_widgets = gtk_container_get_children(GTK_CONTAINER(container));
     for (GList* node = child_widgets; node != nullptr; node = node->next) {
       GVariant* child = dbusmenu_layout(GTK_WIDGET(node->data), depth < 0 ? -1 : depth - 1, FALSE);
+      // g_variant_builder_add() consumes the floating reference produced by
+      // dbusmenu_layout() when wrapping it as a variant. Do not unref child
+      // afterward: that would leave a dangling value in the layout tree.
       g_variant_builder_add(&children, "v", child);
-      g_variant_unref(child);
     }
     g_list_free(child_widgets);
   }
