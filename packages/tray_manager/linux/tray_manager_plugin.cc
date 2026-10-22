@@ -231,13 +231,6 @@ static GVariant* dbusmenu_layout(GtkWidget* widget, gint depth, gboolean root) {
   GVariantBuilder props;
   g_variant_builder_init(&props, G_VARIANT_TYPE("a{sv}"));
   if (!root) {
-    GVariant* item_props = dbusmenu_item_properties(widget);
-    g_variant_builder_add(&props, "{sv}", "label",
-                          g_variant_lookup_value(item_props, "label", G_VARIANT_TYPE_STRING));
-    // Rebuild properties below from the canonical property map to avoid
-    // depending on GTK's private menu representation.
-    g_variant_builder_clear(&props);
-    g_variant_builder_init(&props, G_VARIANT_TYPE("a{sv}"));
     GVariant* properties = dbusmenu_item_properties(widget);
     GVariantIter iter;
     const gchar* key;
@@ -248,7 +241,6 @@ static GVariant* dbusmenu_layout(GtkWidget* widget, gint depth, gboolean root) {
       g_variant_unref(value);
     }
     g_variant_unref(properties);
-    g_variant_unref(item_props);
   }
 
   GVariantBuilder children;
@@ -387,9 +379,9 @@ static GVariant* sni_get_property(GDBusConnection* connection,
   if (strcmp(property_name, "Category") == 0)
     return g_variant_new_string("ApplicationStatus");
   if (strcmp(property_name, "Id") == 0)
-    return g_variant_new_string("commet");
+    return g_variant_new_string("tray_manager");
   if (strcmp(property_name, "Title") == 0)
-    return g_variant_new_string(tray_title != nullptr ? tray_title : "Commet");
+    return g_variant_new_string(tray_title != nullptr ? tray_title : "tray_manager");
   if (strcmp(property_name, "Status") == 0)
     return g_variant_new_string(tray_visible ? "Active" : "Passive");
   if (strcmp(property_name, "WindowId") == 0) return g_variant_new_int32(0);
@@ -628,7 +620,7 @@ static FlMethodResponse* set_title(TrayManagerPlugin* self, FlValue* args) {
   const char* title =
       fl_value_get_string(fl_value_lookup_string(args, "title"));
   g_free(tray_title);
-  tray_title = g_strdup(title != nullptr ? title : "Commet");
+  tray_title = g_strdup(title != nullptr ? title : "tray_manager");
   emit_sni_signal("NewTitle");
   emit_sni_signal("NewToolTip");
   return FL_METHOD_RESPONSE(
@@ -736,7 +728,7 @@ void tray_manager_plugin_register_with_registrar(FlPluginRegistrar* registrar) {
       plugin->channel, method_call_cb, g_object_ref(plugin), g_object_unref);
 
   plugin_instance = plugin;
-  if (tray_title == nullptr) tray_title = g_strdup("Commet");
+  if (tray_title == nullptr) tray_title = g_strdup("tray_manager");
 
   g_object_unref(plugin);
 }
