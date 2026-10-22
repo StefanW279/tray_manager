@@ -300,13 +300,18 @@ static void dbusmenu_method_call(GDBusConnection* connection,
     g_variant_get(parameters, "(ii@as)", &parent_id, &depth, &property_names);
     g_variant_unref(property_names);
 
-    // Only root-level layout is implemented. Return a valid empty subtree for
-    // requests targeting an individual item.
+    // Return the requested item as the root of the subtree. The protocol
+    // uses item id 0 for the menu root and positive ids for menu items.
+    GtkWidget* parent_item = parent_id == 0
+        ? nullptr
+        : find_menu_item_by_id(menu, parent_id);
     GVariant* layout = parent_id == 0
         ? dbusmenu_layout(menu, depth, TRUE)
-        : g_variant_new("(i@a{sv}@av)", parent_id,
-                        g_variant_new_array(G_VARIANT_TYPE("{sv}"), nullptr, 0),
-                        g_variant_new_array(G_VARIANT_TYPE("v"), nullptr, 0));
+        : (parent_item != nullptr
+            ? dbusmenu_layout(parent_item, depth, FALSE)
+            : g_variant_new("(i@a{sv}@av)", parent_id,
+                            g_variant_new_array(G_VARIANT_TYPE("{sv}"), nullptr, 0),
+                            g_variant_new_array(G_VARIANT_TYPE("v"), nullptr, 0)));
     g_dbus_method_invocation_return_value(
         invocation, g_variant_new("(u@(ia{sv}av))", 1, layout));
   } else if (strcmp(method_name, "GetGroupProperties") == 0) {
