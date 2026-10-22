@@ -25,6 +25,7 @@ guint watcher_watch_id = 0;
 gboolean watcher_registered = FALSE;
 GdkPixbuf* tray_icon_pixbuf = nullptr;
 gchar* tray_title = nullptr;
+gchar* tray_icon_name = nullptr;
 gboolean tray_visible = FALSE;
 
 struct _TrayManagerPlugin {
@@ -391,7 +392,8 @@ static GVariant* sni_get_property(GDBusConnection* connection,
   if (strcmp(property_name, "Status") == 0)
     return g_variant_new_string(tray_visible ? "Active" : "Passive");
   if (strcmp(property_name, "WindowId") == 0) return g_variant_new_int32(0);
-  if (strcmp(property_name, "IconName") == 0) return g_variant_new_string("");
+  if (strcmp(property_name, "IconName") == 0)
+    return g_variant_new_string(tray_icon_name != nullptr ? tray_icon_name : "");
   if (strcmp(property_name, "IconPixmap") == 0)
     return build_icon_pixmaps(tray_icon_pixbuf);
   if (strcmp(property_name, "OverlayIconName") == 0 ||
@@ -404,7 +406,8 @@ static GVariant* sni_get_property(GDBusConnection* connection,
       strcmp(property_name, "AttentionIconPixmap") == 0)
     return build_icon_pixmaps(nullptr);
   if (strcmp(property_name, "ToolTip") == 0) {
-    return g_variant_new("(s@a(iiay)ss)", "",
+    return g_variant_new("(s@a(iiay)ss)",
+                         tray_icon_name != nullptr ? tray_icon_name : "",
                          build_icon_pixmaps(tray_icon_pixbuf),
                          tray_title != nullptr ? tray_title : "tray_manager", "");
   }
@@ -581,6 +584,7 @@ static FlMethodResponse* set_icon(TrayManagerPlugin* self, FlValue* args) {
     g_object_unref(tray_icon_pixbuf);
     tray_icon_pixbuf = nullptr;
   }
+  g_clear_pointer(&tray_icon_name, g_free);
 
   if (icon_path != nullptr && *icon_path != '\0') {
     GError* icon_error = nullptr;
@@ -588,7 +592,12 @@ static FlMethodResponse* set_icon(TrayManagerPlugin* self, FlValue* args) {
     if (icon_error != nullptr) g_error_free(icon_error);
 
     // Sandboxed installs pass an icon name rather than a filesystem path.
+    // Preserve that name for StatusNotifier hosts that resolve icons outside
+    // the sandbox, even if GTK cannot load the theme icon inside the sandbox.
     if (tray_icon_pixbuf == nullptr) {
+      if (strchr(icon_path, '/') == nullptr) {
+        tray_icon_name = g_strdup(icon_path);
+      }
       GtkIconTheme* theme = gtk_icon_theme_get_default();
       if (theme != nullptr) {
         gchar* basename = g_path_get_basename(icon_path);
@@ -704,6 +713,7 @@ static void tray_manager_plugin_dispose(GObject* object) {
     tray_icon_pixbuf = nullptr;
   }
   g_clear_pointer(&tray_title, g_free);
+  g_clear_pointer(&tray_icon_name, g_free);
   G_OBJECT_CLASS(tray_manager_plugin_parent_class)->dispose(object);
 }
 
