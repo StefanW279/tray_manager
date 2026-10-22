@@ -202,8 +202,8 @@ static void watcher_registration_finished(GObject* source_object,
                                     &error);
   if (error != nullptr) {
     watcher_registered = FALSE;
-    g_debug("tray_manager: StatusNotifierItem registration will be retried: %s",
-            error->message);
+    g_warning("tray_manager: StatusNotifierItem registration failed: %s",
+              error->message);
     g_error_free(error);
     return;
   }
@@ -285,6 +285,7 @@ GtkWidget* _create_menu(FlValue* args) {
       if (disabled) gtk_widget_set_sensitive(item, FALSE);
 
       if (strcmp(type, "checkbox") == 0) {
+        gtk_widget_destroy(item);
         item = gtk_check_menu_item_new_with_label(label);
         const auto checked_value =
             fl_value_lookup_string(item_value, "checked");
@@ -333,7 +334,7 @@ static FlMethodResponse* set_icon(TrayManagerPlugin* self, FlValue* args) {
     if (tray_icon_pixbuf == nullptr) {
       GtkIconTheme* theme = gtk_icon_theme_get_default();
       if (theme != nullptr) {
-        const gchar* basename = g_path_get_basename(icon_path);
+        gchar* basename = g_path_get_basename(icon_path);
         gchar* icon_name = g_strdup(basename);
         gchar* extension = strrchr(icon_name, '.');
         if (extension != nullptr) *extension = '\0';
@@ -341,7 +342,7 @@ static FlMethodResponse* set_icon(TrayManagerPlugin* self, FlValue* args) {
             gtk_icon_theme_load_icon(theme, icon_name, 48,
                                      GTK_ICON_LOOKUP_FORCE_SIZE, nullptr);
         g_free(icon_name);
-        g_free((gpointer)basename);
+        g_free(basename);
       }
     }
   }
@@ -412,6 +413,10 @@ static void tray_manager_plugin_handle_method_call(TrayManagerPlugin* self,
 }
 
 static void tray_manager_plugin_dispose(GObject* object) {
+  if (watcher_watch_id != 0) {
+    g_bus_unwatch_name(watcher_watch_id);
+    watcher_watch_id = 0;
+  }
   if (sni_connection != nullptr && sni_registration_id != 0) {
     g_dbus_connection_unregister_object(sni_connection, sni_registration_id);
     sni_registration_id = 0;
