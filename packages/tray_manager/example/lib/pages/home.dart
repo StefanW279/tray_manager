@@ -29,6 +29,20 @@ class _HomePageState extends State<HomePage> with TrayListener {
   void initState() {
     trayManager.addListener(this);
     super.initState();
+    unawaited(_initializeTray());
+  }
+
+  Future<void> _initializeTray() async {
+    // Make the example tray usable immediately after launch.
+    await _handleSetIcon(_kIconTypeOriginal);
+    _menu = Menu(
+      items: [
+        MenuItem(
+          label: 'Tray manager test menu',
+        ),
+      ],
+    );
+    await trayManager.setContextMenu(_menu!);
   }
 
   @override
@@ -312,9 +326,8 @@ class _HomePageState extends State<HomePage> with TrayListener {
     if (kDebugMode) {
       print('onTrayIconMouseDown');
     }
-    trayManager.popUpContextMenu(
-      bringAppToFront: shouldForegroundOnContextMenu.value,
-    );
+    // Primary click should be delivered to the app, not open the menu.
+    BotToast.showText(text: 'Primary tray click received');
   }
 
   @override
