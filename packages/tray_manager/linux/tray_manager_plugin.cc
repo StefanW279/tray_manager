@@ -587,17 +587,19 @@ static FlMethodResponse* set_icon(TrayManagerPlugin* self, FlValue* args) {
   g_clear_pointer(&tray_icon_name, g_free);
 
   if (icon_path != nullptr && *icon_path != '\0') {
+    // Keep icon names available to StatusNotifier hosts even if GTK also
+    // resolves the name to a pixbuf. Flatpak icon IDs are not file paths.
+    if (strchr(icon_path, '/') == nullptr) {
+      tray_icon_name = g_strdup(icon_path);
+    }
+
     GError* icon_error = nullptr;
     tray_icon_pixbuf = gdk_pixbuf_new_from_file(icon_path, &icon_error);
     if (icon_error != nullptr) g_error_free(icon_error);
 
     // Sandboxed installs pass an icon name rather than a filesystem path.
-    // Preserve that name for StatusNotifier hosts that resolve icons outside
-    // the sandbox, even if GTK cannot load the theme icon inside the sandbox.
+    // Try GTK's theme as a fallback for hosts that consume IconPixmap.
     if (tray_icon_pixbuf == nullptr) {
-      if (strchr(icon_path, '/') == nullptr) {
-        tray_icon_name = g_strdup(icon_path);
-      }
       GtkIconTheme* theme = gtk_icon_theme_get_default();
       if (theme != nullptr) {
         gchar* basename = g_path_get_basename(icon_path);
